@@ -136,7 +136,10 @@ def main():
     with tempfile.TemporaryDirectory() as temp_dir:
         cfg.temp_data["temp_dir"] = temp_dir
         app = App()
-        app.iconbitmap(Path("./resources/images/icons/Fofo.ico"))
+        try:
+            app.iconbitmap(Path("./resources/images/icons/Fofo.ico"))
+        except:
+            pass
         app.title(f"GUI Collect v{version}")
         TextureManager(temp_dir)
 
