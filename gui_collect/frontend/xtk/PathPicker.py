@@ -7,6 +7,7 @@ from tkinter.font import Font
 
 from gui_collect.backend.config.Config import Config
 from gui_collect.common import open_folder
+from gui_collect.common.file_explorer import _SYSTEM
 from gui_collect.frontend.style import brighter
 from .FlatImageButton import FlatImageButton
 
@@ -225,12 +226,13 @@ def get_short_path(s: str, max_width: int, font):
     if font_obj.measure(s) <= max_width:
         return s
 
-    prefix = "...\\"
+    slash = "\\" if _SYSTEM == "Windows" else "/"
+    prefix = f"...{slash}"
     prefix_len = __measure(prefix, font)
 
     while prefix_len + font_obj.measure(s) > max_width:
         try:
-            s = s.split("\\", maxsplit=1)[1]
+            s = s.split(slash, maxsplit=1)[1]
         except IndexError:
             break
 
