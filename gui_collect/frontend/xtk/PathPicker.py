@@ -1,20 +1,16 @@
-import os
 import logging
-import subprocess
 import tkinter as tk
-from tkinter.font import Font
-from tkinter import filedialog
-from pathlib import Path
 from functools import cache
+from pathlib import Path
+from tkinter import filedialog
+from tkinter.font import Font
 
 from gui_collect.backend.config.Config import Config
-
-from .FlatImageButton import FlatImageButton
+from gui_collect.common import open_folder
 from gui_collect.frontend.style import brighter
-
+from .FlatImageButton import FlatImageButton
 
 logger = logging.getLogger(__name__)
-FILEBROWSER_PATH = os.path.join(os.getenv("WINDIR"), "explorer.exe")
 
 
 class PathPicker(tk.Frame):
@@ -110,7 +106,7 @@ class PathPicker(tk.Frame):
         )
         kwargs = (
             {
-                "text": self.editable_label_text,
+                "text"     : self.editable_label_text,
                 "text_dims": (
                     Font(family="Arial", size=16).measure(self.editable_label_text),
                     (4, 0),
@@ -159,7 +155,7 @@ class PathPicker(tk.Frame):
                 self.label_btn.config(bg=self.default_bg)
 
         if not self.override_open:
-            handle_click = lambda _: subprocess.run([FILEBROWSER_PATH, self.path])
+            handle_click = lambda _: open_folder(self.path)
             img = tk.PhotoImage(
                 file=Path("./resources/images/buttons/open_in_new.32.png").absolute()
             )

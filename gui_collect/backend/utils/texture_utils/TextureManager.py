@@ -1,8 +1,7 @@
 import subprocess
 import threading
-
-from tkinter import PhotoImage
 from pathlib import Path
+from tkinter import PhotoImage
 
 from ...analysis.structs import Texture
 
@@ -23,7 +22,6 @@ class TextureManager:
             raise Exception("TextureManager already created.")
         TextureManager.__instance = self
         self.temp_dir_filepath = Path(temp_dir)
-        # subprocess.run([FILEBROWSER_PATH, Path(temp_dir)])
 
         self.no_preview_image = PhotoImage(
             file=str(Path("./resources/images/textures/NoPreview.256.png").absolute())
