@@ -439,6 +439,12 @@ def _export_component_buffers(
     export_name: str, path: Path, component: Component, vb_merged, vb_binary=None,
     sk_offsets=None,
 ):
+    if vb_binary is not None:
+        _export_component_binary_buffers(
+            export_name, path, component, vb_merged, vb_binary, sk_offsets
+        )
+        return
+
     object_classification = component.object_classification
 
     # Instead of writing the same vb0 text file multiple times,
@@ -446,7 +452,6 @@ def _export_component_buffers(
     # the rest of the component's parts. Copying seems faster
     # than writing
     main_vb0_file_path = None
-    main_vb0_buf_file_path = None
 
     for i, ib_path in enumerate(component.ib_paths):
         prefix = export_name + component.name + object_classification[i]
@@ -456,45 +461,66 @@ def _export_component_buffers(
         )
         ib_file_name = "{}-ib={}".format(prefix, component.ib_hash)
 
-        if vb_binary is None:
-            vb0_file_path = path / (vb0_file_name + ".txt")
-            if not main_vb0_file_path:
-                vb0_file_path.write_text(vb_merged)
-                main_vb0_file_path = vb0_file_path
-            else:
-                shutil.copyfile(main_vb0_file_path, vb0_file_path)
-
-            ib_file_path = path / (ib_file_name + ".txt")
-            shutil.copyfile(ib_path, ib_file_path)
-            continue
-
-        vb0_buf_file_path = path / (vb0_file_name + ".buf")
-        if not main_vb0_buf_file_path:
-            vb0_buf_file_path.write_bytes(vb_binary)
-            main_vb0_buf_file_path = vb0_buf_file_path
+        vb0_file_path = path / (vb0_file_name + ".txt")
+        if not main_vb0_file_path:
+            vb0_file_path.write_text(vb_merged)
+            main_vb0_file_path = vb0_file_path
         else:
-            shutil.copyfile(main_vb0_buf_file_path, vb0_buf_file_path)
+            shutil.copyfile(main_vb0_file_path, vb0_file_path)
 
-        ib_header, header_data, index_data_start_pos = read_ib_header(ib_path)
+        ib_file_path = path / (ib_file_name + ".txt")
+        shutil.copyfile(ib_path, ib_file_path)
 
-        ib_buf_file_path = path / (ib_file_name + ".buf")
-        if (dumped_ib_buf_path := ib_path.with_suffix(".buf")).exists():
-            shutil.copyfile(dumped_ib_buf_path, ib_buf_file_path)
-        else:
-            logger.warning(
-                "<PATH>%s</PATH> does not exist in the frame analysis folder. "
-                "Reconstructing it from the index data of <PATH>%s</PATH> instead.",
-                dumped_ib_buf_path.name,
-                ib_path.name,
-            )
-            ib_buf_file_path.write_bytes(
-                construct_ib_binary(
-                    ib_path, index_data_start_pos, header_data.get("format")
-                )
-            )
 
-        fmt_file_path = path / (vb0_file_name + ".fmt")
-        fmt_file_path.write_text(ib_header + _sk_header(sk_offsets) + vb_merged)
+def _export_component_binary_buffers(
+    export_name: str, path: Path, component: Component, vb_header, vb_binary, sk_offsets
+):
+    # One set of files per component: <Name>.fmt holds one ib header block per
+    # part, then the sk and vb headers; all parts share <Name>-vb.buf and
+    # <Name>-ib.buf and are told apart by their first index/index count.
+    prefix = export_name + component.name
+    (path / (prefix + "-vb.buf")).write_bytes(vb_binary)
+
+    ib_parts = [(ib_path, *read_ib_header(ib_path)) for ib_path in component.ib_paths]
+
+    ib_buf_file_path = path / (prefix + "-ib.buf")
+    dumped_ib_buf_path = next(
+        (p.with_suffix(".buf") for p, *_ in ib_parts if p.with_suffix(".buf").exists()),
+        None,
+    )
+    if dumped_ib_buf_path:
+        # The dumped .buf is the whole index buffer, shared by every part
+        shutil.copyfile(dumped_ib_buf_path, ib_buf_file_path)
+    else:
+        logger.warning(
+            "No dumped index .buf for %s in the frame analysis folder. "
+            "Reconstructing it from the parts' index data instead.",
+            prefix,
+        )
+        ib_buf_file_path.write_bytes(_reconstruct_ib_binary(ib_parts))
+
+    fmt_file_path = path / (prefix + ".fmt")
+    fmt_file_path.write_text(
+        "".join(ib_header for _, ib_header, *_ in ib_parts)
+        + _sk_header(sk_offsets)
+        + vb_header
+    )
+
+
+def _reconstruct_ib_binary(ib_parts) -> bytes:
+    ib_binary = bytearray()
+    for ib_path, _, header_data, index_data_start_pos in ib_parts:
+        dxgi_format = header_data.get("format", "")
+        data = construct_ib_binary(ib_path, index_data_start_pos, dxgi_format)
+        width = 4 if "32" in dxgi_format else 2
+        # A .txt dump may hold only the drawn range; if so, put it at its first index
+        offset = 0
+        if len(data) // width == int(header_data.get("index count", -1)):
+            offset = int(header_data.get("first index", 0)) * width
+        if len(ib_binary) < offset + len(data):
+            ib_binary.extend(bytes(offset + len(data) - len(ib_binary)))
+        ib_binary[offset : offset + len(data)] = data
+    return bytes(ib_binary)
 
 
 def _sk_header(sk_offsets) -> str:
@@ -510,7 +536,7 @@ def _export_component_sk_buffer(
     binary_export=False,
 ):
     prefix = export_name + component.name
-    buf_file_name = "{}SKDeltas.buf".format(prefix)
+    buf_file_name = ("{}-SKDeltas.buf" if binary_export else "{}SKDeltas.buf").format(prefix)
     txt_file_name = "{}SKDeltas.txt".format(prefix)
 
     buf_file_path = path / buf_file_name
