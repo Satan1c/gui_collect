@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 import traceback
+import struct
 from pathlib import Path
 
 from gui_collect.backend.config.Config import Config
@@ -25,7 +26,8 @@ from gui_collect.backend.utils.buffer_utils.structs import (
     BLEND_2VGX_FMT,
     BLEND_4VGX_FMT,
     POSITION_EXTRA_TANGENT_FMT,
-    POSITION_FMT
+    POSITION_FMT,
+    SKDELTAS_FMT,
 )
 from gui_collect.common import open_folder
 from .JsonBuilder import JsonBuilder
@@ -33,6 +35,12 @@ from .LogAnalysis import LogAnalysis
 from .structs import Component
 
 logger = logging.getLogger(__name__)
+
+
+class Offset:
+    def __init__(self, offset, count):
+        self.offset = offset
+        self.count = count
 
 
 class FrameAnalysis:
@@ -178,6 +186,57 @@ class FrameAnalysis:
 
             return buffer, buffer_elements
 
+    def get_sk_data(self, buffer_paths: list[Path]):
+        if len(buffer_paths) == 0:
+            return None, None
+
+        buffer_stride = 40
+        buffer_elements = SKDELTAS_FMT
+
+        buffer_path = buffer_paths[0].with_suffix(".buf")
+        buffer_formats = [element.Format for element in buffer_elements]
+        buffer = collect_binary_buffer_data(
+            buffer_path, buffer_formats, buffer_stride
+        )
+
+        return buffer, buffer_elements
+
+    def get_sk_offsets(self, shapekey_buffer_path: Path):
+        record_format = "<I9f"
+        record_size = struct.calcsize(record_format)
+        sk_deltas = []
+
+        with open(shapekey_buffer_path, "rb") as f:
+            while chunk := f.read(record_size):
+                if len(chunk) == record_size:
+                    unpacked_data = struct.unpack(record_format, chunk)
+                    sk_deltas.append({
+                        "VINDEX": unpacked_data[0],
+                        "POSITION": unpacked_data[1:4],
+                        "NORMAL": unpacked_data[4:7],
+                        "TANGENT": unpacked_data[7:10],
+                    })
+
+        if len(sk_deltas) == 0:
+            return []
+
+        offsets: list[Offset] = []
+
+        offset: int = 0
+        for i in range(len(sk_deltas)):
+            vindex = sk_deltas[i]["VINDEX"]
+            if i + 1 >= len(sk_deltas):
+                break
+            next_vindex = sk_deltas[i + 1]["VINDEX"]
+            if vindex >= next_vindex:
+                offsets.append(Offset(offset, i - offset + 1))
+                offset = i + 1
+        offsets.append(Offset(offset, len(sk_deltas) - offset))
+
+        data_to_write = [o.__dict__ for o in offsets]
+
+        return data_to_write
+
     def export(
         self, export_name, components: list[Component], textures=None, *, game: str
     ):
@@ -239,6 +298,11 @@ class FrameAnalysis:
                     if component.texcoord_path
                     else component.backup_texcoord_paths
                 )
+                sk_deltas_paths = (
+                    [component.shapekey_buffer_path]
+                    if component.shapekey_buffer_path
+                    else []
+                )
 
                 # In HSR, the position buffer can either be 56 or 40 stride. In addition, the blend stride can be
                 # strides 32 or 16 or 4 We can infer the correct stride with no ambiguity for each by matching the
@@ -295,6 +359,12 @@ class FrameAnalysis:
                 texcoord_data, texcoord_elements = self.get_texcoord_data(
                     texcoord_paths
                 )
+                sk_data, sk_deltas_elements = self.get_sk_data(sk_deltas_paths)
+                sk_offsets = (
+                    self.get_sk_offsets(component.shapekey_buffer_path)
+                    if component.shapekey_buffer_path
+                    else []
+                )
 
                 if not position_data:
                     json_builder.components[-1].__setattr__(f"position_vb", "")
@@ -325,6 +395,14 @@ class FrameAnalysis:
                         vb_merged, vb_binary = merge_buffers_binary(buffers, elements)
                     else:
                         vb_merged = merge_buffers(buffers, elements)
+
+                if component.shapekey_buffer_path:
+                    sk_buffer = (
+                        merge_buffers([sk_data], [sk_deltas_elements]) if sk_data else None
+                    )
+                    _export_component_sk_buffer(
+                        export_name, extract_path, component, sk_buffer, sk_offsets
+                    )
 
             if component.options["collect_texture_data"] and textures:
                 _export_component_textures(
@@ -412,6 +490,38 @@ def _export_component_buffers(
 
         fmt_file_path = path / (vb0_file_name + ".fmt")
         fmt_file_path.write_text(ib_header + vb_merged)
+
+
+def _export_component_sk_buffer(
+    export_name: str, path: Path, component: Component, sk_data, sk_offsets
+):
+    prefix = export_name + component.name
+    buf_file_name = "{}SKDeltas.buf".format(prefix)
+    txt_file_name = "{}SKDeltas.txt".format(prefix)
+
+    buf_file_path = path / buf_file_name
+    shutil.copyfile(component.shapekey_buffer_path, buf_file_path)
+
+    txt_file_path = path / txt_file_name
+    if sk_data is None:
+        logger.warning("No SK data to export for %s", component.name)
+        return
+
+    # Inject sk offsets/sk counts header lines (space-separated keys,
+    # matching the other dump header entries)
+    if sk_offsets:
+        offset_str = ",".join(str(o["offset"]) for o in sk_offsets)
+        count_str = ",".join(str(o["count"]) for o in sk_offsets)
+        # Find the topology line and inject headers after it
+        lines = sk_data.splitlines(keepends=True)
+        for i, line in enumerate(lines):
+            if line.strip().startswith("topology:"):
+                lines.insert(i + 1, f"sk offsets: {offset_str}\n")
+                lines.insert(i + 2, f"sk counts: {count_str}\n")
+                break
+        sk_data = "".join(lines)
+
+    txt_file_path.write_text(sk_data)
 
 
 def _export_component_textures(

@@ -11,6 +11,7 @@ class JsonComponent:
     pre_draw_vb: str = ""
     position_vb: str = ""
     blend_vb: str = ""
+    sk_deltas_vb: str = ""
     texcoord_vb: str = ""
     ib: str = ""
 
@@ -21,11 +22,13 @@ class JsonComponent:
     texture_hashes: list[list[list[str]]] = field(default_factory=lambda: [])
 
 def filtered_as_dict(c):
-    # Exclude the pre_draw_vb key from the dict if its blank
+    # Exclude the blank keys from the dict
     d = {
         k: v
         for k, v in asdict(c).items()
-        if not (k == "pre_draw_vb" and v == "")
+        if not (
+            (k in ("pre_draw_vb", "sk_deltas_vb") and v == "")
+        )
     }
 
     return d
@@ -74,6 +77,9 @@ class JsonBuilder:
                 json_component.position_vb = component.position_hash
             elif component.backup_position_paths:
                 json_component.position_vb = component.draw_hash
+
+            if component.shapekey_buffer_hash:
+                json_component.sk_deltas_vb = component.shapekey_buffer_hash
 
             json_component.pre_draw_vb = component.pre_draw_hash
             json_component.texcoord_vb = component.texcoord_hash
