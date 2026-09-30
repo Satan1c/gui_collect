@@ -74,7 +74,7 @@ class ConfigData:
     debugging: str = False
     targeted_analysis_enabled: bool = False
     reverse_shapekeys_hsr: bool = True
-    reverse_shapekeys_zzz: bool = False
+    reverse_shapekeys_zzz: bool = True
     game: dict[str, _GameConfigData] = field(
         default_factory=lambda: {
             "zzz": _GameConfigData(_game="zzz"),
