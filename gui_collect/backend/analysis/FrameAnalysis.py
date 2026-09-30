@@ -398,10 +398,13 @@ class FrameAnalysis:
 
                 if component.shapekey_buffer_path:
                     sk_buffer = (
-                        merge_buffers([sk_data], [sk_deltas_elements]) if sk_data else None
+                        merge_buffers([sk_data], [sk_deltas_elements])
+                        if sk_data and not binary_export
+                        else None
                     )
                     _export_component_sk_buffer(
-                        export_name, extract_path, component, sk_buffer, sk_offsets
+                        export_name, extract_path, component, sk_buffer, sk_offsets,
+                        binary_export,
                     )
 
             if component.options["collect_texture_data"] and textures:
@@ -410,7 +413,8 @@ class FrameAnalysis:
                 )
             if component.options["collect_model_data"] and vb_merged:
                 _export_component_buffers(
-                    export_name, extract_path, component, vb_merged, vb_binary
+                    export_name, extract_path, component, vb_merged, vb_binary,
+                    sk_offsets,
                 )
 
         json_out = json.dumps(json_builder.build(), indent=4)
@@ -432,7 +436,8 @@ class FrameAnalysis:
 
 
 def _export_component_buffers(
-    export_name: str, path: Path, component: Component, vb_merged, vb_binary=None
+    export_name: str, path: Path, component: Component, vb_merged, vb_binary=None,
+    sk_offsets=None,
 ):
     object_classification = component.object_classification
 
@@ -489,11 +494,20 @@ def _export_component_buffers(
             )
 
         fmt_file_path = path / (vb0_file_name + ".fmt")
-        fmt_file_path.write_text(ib_header + vb_merged)
+        fmt_file_path.write_text(ib_header + _sk_header(sk_offsets) + vb_merged)
+
+
+def _sk_header(sk_offsets) -> str:
+    if not sk_offsets:
+        return ""
+    offset_str = ",".join(str(o["offset"]) for o in sk_offsets)
+    count_str = ",".join(str(o["count"]) for o in sk_offsets)
+    return f"sk offsets: {offset_str}\nsk counts: {count_str}\n"
 
 
 def _export_component_sk_buffer(
-    export_name: str, path: Path, component: Component, sk_data, sk_offsets
+    export_name: str, path: Path, component: Component, sk_data, sk_offsets,
+    binary_export=False,
 ):
     prefix = export_name + component.name
     buf_file_name = "{}SKDeltas.buf".format(prefix)
@@ -501,6 +515,9 @@ def _export_component_sk_buffer(
 
     buf_file_path = path / buf_file_name
     shutil.copyfile(component.shapekey_buffer_path, buf_file_path)
+    # In binary mode the sk header goes into the component's .fmt instead
+    if binary_export:
+        return
 
     txt_file_path = path / txt_file_name
     if sk_data is None:
@@ -510,14 +527,11 @@ def _export_component_sk_buffer(
     # Inject sk offsets/sk counts header lines (space-separated keys,
     # matching the other dump header entries)
     if sk_offsets:
-        offset_str = ",".join(str(o["offset"]) for o in sk_offsets)
-        count_str = ",".join(str(o["count"]) for o in sk_offsets)
         # Find the topology line and inject headers after it
         lines = sk_data.splitlines(keepends=True)
         for i, line in enumerate(lines):
             if line.strip().startswith("topology:"):
-                lines.insert(i + 1, f"sk offsets: {offset_str}\n")
-                lines.insert(i + 2, f"sk counts: {count_str}\n")
+                lines.insert(i + 1, _sk_header(sk_offsets))
                 break
         sk_data = "".join(lines)
 
