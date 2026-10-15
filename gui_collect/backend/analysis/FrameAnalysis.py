@@ -2,9 +2,10 @@ import json
 import logging
 import os
 import shutil
+import struct
 import time
 import traceback
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from gui_collect.backend.config.Config import Config
 from gui_collect.backend.utils.buffer_utils.buffer_decoder import (
@@ -39,6 +40,7 @@ class FrameAnalysis:
     def __init__(self, frame_analysis_path: Path):
         logger.info("Starting Frame Analysis: <PATH>%s</PATH>\n", frame_analysis_path)
         self.path = frame_analysis_path
+        _restore_lnk_hardlinks(self.path)
         self.log_analysis = LogAnalysis(self.path)
         self.cfg = Config.get_instance().data
 
@@ -351,6 +353,53 @@ class FrameAnalysis:
             logger.info(
                 "Opening <PATH>%s</PATH> with File Explorer", extract_path.absolute()
             )
+
+
+def _restore_lnk_hardlinks(frame_analysis_path: Path):
+    """
+    Frame analysis folders copied off Windows turn 3DMigoto's hard links into
+    `<name>.lnk` shortcuts. Recreate each hard link next to its shortcut so the
+    dump can be read under its original file name.
+    """
+    for lnk_path in frame_analysis_path.glob("*.lnk"):
+        link_path = lnk_path.with_suffix("")
+        if link_path.exists():
+            continue
+        try:
+            target_path = _read_lnk_relative_path(lnk_path)
+        except (OSError, struct.error):
+            continue
+        if target_path is None or not target_path.exists():
+            continue
+        try:
+            os.link(target_path, link_path)
+        except OSError:
+            shutil.copyfile(target_path, link_path)
+
+
+def _read_lnk_relative_path(lnk_path: Path):
+    """
+    Returns the path a Windows shortcut points to via its RelativePath field,
+    resolved against the shortcut's folder, or None if the field is absent.
+    """
+    data = lnk_path.read_bytes()
+    flags = struct.unpack_from("<I", data, 0x14)[0]
+    if not flags & 0x08:  # HasRelativePath
+        return None
+
+    char_size = 2 if flags & 0x80 else 1  # IsUnicode
+    pos = 0x4C
+    if flags & 0x01:  # HasLinkTargetIDList
+        pos += 2 + struct.unpack_from("<H", data, pos)[0]
+    if flags & 0x02:  # HasLinkInfo
+        pos += struct.unpack_from("<I", data, pos)[0]
+    if flags & 0x04:  # HasName
+        pos += 2 + struct.unpack_from("<H", data, pos)[0] * char_size
+
+    count = struct.unpack_from("<H", data, pos)[0]
+    text = data[pos + 2 : pos + 2 + count * char_size]
+    relative = text.decode("utf-16-le" if char_size == 2 else "cp1252")
+    return lnk_path.parent.joinpath(*PureWindowsPath(relative).parts)
 
 
 def _export_component_buffers(
